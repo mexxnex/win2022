@@ -1,0 +1,57 @@
+name: RDP via Tailscale - Windows Server 2022
+
+on:
+  workflow_dispatch:
+
+env:
+  TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+    - name: Setup Tailscale
+      shell: powershell
+      run: |
+        Write-Host "[INFO] Downloading Tailscale..."
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale_latest_amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+        Write-Host "[INFO] Installing Tailscale..."
+        msiexec /i "$env:TEMP\tailscale.msi" /quiet /norestart
+        Start-Sleep -Seconds 5
+
+    - name: Connect to Tailscale
+      shell: powershell
+      run: |
+        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TS_AUTH_KEY" --unattended --reset
+
+    - name: Enable RDP Access
+      shell: powershell
+      run: |
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        net user runneradmin "WindowsRDP#2025"
+
+    - name: Get Tailscale IP
+      shell: powershell
+      run: |
+        $tsIp = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+        Write-Host "::notice::Tailscale IP: $tsIp"
+        Write-Host ""
+        Write-Host "================ RDP IS READY ================"
+        Write-Host "OS          : Windows Server 2022"
+        Write-Host "IP Address  : $tsIp"
+        Write-Host "Username    : runneradmin"
+        Write-Host "Password    : WindowsRDP#2025"
+        Write-Host "=============================================="
+
+    - name: Keep Alive
+      shell: powershell
+      run: |
+        Write-Host "[INFO] RDP akan aktif selama 6 jam..."
+        Write-Host "[INFO] Tekan Ctrl+C untuk menghentikan lebih awal"
+        while ($true) {
+            Write-Host "[HEARTBEAT] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - RDP Active on Windows Server 2022"
+            Start-Sleep -Seconds 300
+        }
