@@ -1,10 +1,7 @@
-name: RDP via Tailscale - Windows Server 2022
+name: RDP Windows Server 2022
 
 on:
   workflow_dispatch:
-
-env:
-  TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
 jobs:
   build:
@@ -12,46 +9,58 @@ jobs:
     timeout-minutes: 360
 
     steps:
-    - name: Setup Tailscale
-      shell: powershell
-      run: |
-        Write-Host "[INFO] Downloading Tailscale..."
-        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale_latest_amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
-        Write-Host "[INFO] Installing Tailscale..."
-        msiexec /i "$env:TEMP\tailscale.msi" /quiet /norestart
-        Start-Sleep -Seconds 5
+      - name: Install Chocolatey
+        run: |
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
 
-    - name: Connect to Tailscale
-      shell: powershell
-      run: |
-        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TS_AUTH_KEY" --unattended --reset
+      - name: Install Tailscale via Chocolatey
+        run: choco install tailscale -y
 
-    - name: Enable RDP Access
-      shell: powershell
-      run: |
-        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        net user runneradmin "WindowsRDP#2025"
+      - name: Connect Tailscale
+        run: |
+          & 'C:\Program Files\Tailscale\tailscale.exe' up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --unattended --accept-routes
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
-    - name: Get Tailscale IP
-      shell: powershell
-      run: |
-        $tsIp = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-        Write-Host "::notice::Tailscale IP: $tsIp"
-        Write-Host ""
-        Write-Host "================ RDP IS READY ================"
-        Write-Host "OS          : Windows Server 2022"
-        Write-Host "IP Address  : $tsIp"
-        Write-Host "Username    : runneradmin"
-        Write-Host "Password    : WindowsRDP#2025"
-        Write-Host "=============================================="
+      - name: Enable RDP
+        run: |
+          # Enable RDP registry
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+          
+          # Enable firewall rule
+          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          
+          # Set password for runneradmin
+          net user runneradmin 'RDPpassword123!'
+          
+          # Add to RDP group
+          net localgroup "Remote Desktop Users" runneradmin /add
 
-    - name: Keep Alive
-      shell: powershell
-      run: |
-        Write-Host "[INFO] RDP akan aktif selama 6 jam..."
-        Write-Host "[INFO] Tekan Ctrl+C untuk menghentikan lebih awal"
-        while ($true) {
-            Write-Host "[HEARTBEAT] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - RDP Active on Windows Server 2022"
-            Start-Sleep -Seconds 300
-        }
+      - name: Get Connection Info
+        run: |
+          $tailscaleIp = & 'C:\Program Files\Tailscale\tailscale.exe' ip -4
+          Write-Host "========================================"
+          Write-Host "✅ RDP READY - Windows Server 2022"
+          Write-Host "========================================"
+          Write-Host "IP Address : $tailscaleIp"
+          Write-Host "Username   : runneradmin"
+          Write-Host "Password   : RDPpassword123!"
+          Write-Host "========================================"
+          Write-Host ""
+          Write-Host "How to connect:"
+          Write-Host "1. Install Tailscale di PC/laptop kamu"
+          Write-Host "2. Login ke Tailscale network yang SAMA"
+          Write-Host "3. Buka Remote Desktop Connection"
+          Write-Host "4. Masukkan IP di atas, username & password"
+          Write-Host "========================================"
+
+      - name: Keep Alive (6 Hours)
+        run: |
+          Write-Host "RDP akan aktif selama 6 jam"
+          Write-Host "Press Ctrl+C to stop early"
+          for ($i = 0; $i -lt 21600; $i += 60) {
+            Write-Host "RDP Active - $(Get-Date -Format 'HH:mm:ss') - remaining: $([math]::Floor((21600-$i)/3600)) jam"
+            Start-Sleep -Seconds 60
+          }
