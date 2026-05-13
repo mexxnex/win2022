@@ -1,0 +1,119 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *'  # Jalan tiap 12 jam (opsional, biar auto run)
+
+jobs:
+  rdp-windows11:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Aktifkan RDP + Setting Registry
+        run: |
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          # Disable NLA (Network Level Authentication)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          # Set security layer ke 0 (RDP aman)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+          
+          # Buka firewall port 3389
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+          
+          # Restart Remote Desktop Service
+          Restart-Service -Name TermService -Force
+
+      - name: Buat User Administrator Tetap
+        run: |
+          $username = "GeminiXD"
+          $password = "AdminGemini2108"
+          
+          # Cek apakah user sudah ada, kalo ada hapus dulu
+          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+              Remove-LocalUser -Name $username -Force
+          }
+          
+          # Buat user baru dengan password tetap
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name $username -Password $securePass -PasswordNeverExpires -AccountNeverExpires
+          
+          # Tambahkan ke group Administrator dan Remote Desktop Users
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+          
+          # Simpan credentials ke environment
+          echo "RDP_USER=$username" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          
+          Write-Host "User $username berhasil dibuat dengan password tetap!"
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-$env:GITHUB_RUN_ID
+          
+          # Tunggu sampai dapat IP Tailscale
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 15) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Gagal mendapatkan IP Tailscale!"
+              exit 1
+          }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $tsIP"
+
+      - name: Cek Koneksi RDP
+        run: |
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "Koneksi ke port 3389 gagal!"
+              exit 1
+          }
+          Write-Host "[✓] Koneksi RDP berhasil!"
+
+      - name: Tampilkan Info Akses
+        run: |
+          Write-Host "`n========================================="
+          Write-Host "   RDP WINDOWS 11 AKTIF - GeminiXD"
+          Write-Host "========================================="
+          Write-Host "Tailscale IP  : $env:TAILSCALE_IP"
+          Write-Host "Port          : 3389"
+          Write-Host "Username      : $env:RDP_USER"
+          Write-Host "Password      : $env:RDP_PASS"
+          Write-Host "========================================="
+          Write-Host "Cara koneksi:"
+          Write-Host "1. Install Tailscale di PC/VPS lo"
+          Write-Host "2. Buka Remote Desktop Connection (mstsc)"
+          Write-Host "3. Masukkan IP Tailscale di atas"
+          Write-Host "4. Login pake username & password di atas"
+          Write-Host "=========================================`n"
+
+      - name: Keep Alive (Auto Reconnect)
+        run: |
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Aktif - Tekan Ctrl+C di GitHub Actions untuk stop"
+              Start-Sleep -Seconds 300
+          }
