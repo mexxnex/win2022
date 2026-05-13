@@ -1,0 +1,109 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *'
+
+jobs:
+  rdp-windows11:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Aktifkan RDP + Setting Registry
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+          
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+          
+          Restart-Service -Name TermService -Force
+
+      - name: Set Password untuk User Administrator
+        run: |
+          $password = "AdminGemini2108"
+          
+          # Set password untuk user Administrator bawaan Windows
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          Set-LocalUser -Name "Administrator" -Password $securePass -PasswordNeverExpires $true
+          
+          # Pastikan Administrator aktif
+          Get-LocalUser -Name "Administrator" | Enable-LocalUser
+          
+          # Tambahkan ke Remote Desktop Users (kalo belum)
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Administrator" -ErrorAction SilentlyContinue
+          
+          echo "RDP_USER=Administrator" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          
+          Write-Host "Password untuk user Administrator berhasil diubah!"
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-$env:GITHUB_RUN_ID
+          
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 15) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Gagal mendapatkan IP Tailscale!"
+              exit 1
+          }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $tsIP"
+
+      - name: Test Koneksi RDP
+        run: |
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "Koneksi RDP gagal!"
+              exit 1
+          }
+          Write-Host "[✓] RDP siap diakses!"
+
+      - name: Tampilkan Info Akses
+        run: |
+          Write-Host "`n================================================="
+          Write-Host "   RDP WINDOWS 11 AKTIF - GeminiXD"
+          Write-Host "================================================="
+          Write-Host "Tailscale IP  : $env:TAILSCALE_IP"
+          Write-Host "Username      : Administrator"
+          Write-Host "Password      : $env:RDP_PASS"
+          Write-Host "================================================="
+          Write-Host "Cara koneksi:"
+          Write-Host "1. Install Tailscale di PC/VPS lo"
+          Write-Host "2. Buka Remote Desktop Connection (mstsc)"
+          Write-Host "3. Masukkan IP Tailscale di atas (GA PAKE PORT)"
+          Write-Host "4. Login pake:"
+          Write-Host "   Username: Administrator"
+          Write-Host "   Password: $env:RDP_PASS"
+          Write-Host "=================================================`n"
+
+      - name: Keep Alive
+        run: |
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Aktif (Administrator) - Klik Cancel di Actions buat stop"
+              Start-Sleep -Seconds 300
+          }
